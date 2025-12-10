@@ -1,0 +1,455 @@
+---
+title: "AD vs FTD"
+subtitle: "Análisis descriptivo, modelos de regresión logística y permutaciones"
+author: "Canziani, Verónica - Freilij, Tomás - Gromadzyn, Guido"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+lang: es
+
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    number_sections: true
+    theme: flatly        # otro tema lindo
+    highlight: pygments
+    df_print: paged
+    fig_width: 7
+    fig_height: 5
+    keep_md: true        # opcional, guarda el .md
+
+fontsize: 11pt
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+## Carga de librerias
+
+```{r}
+library(tidyverse)
+library(gt)
+library(kableExtra)
+library(gtsummary)
+library(corrplot)
+library(car)
+library(caret)
+library(pROC)
+```
+
+## Carga de datos
+
+```{r}
+library(readxl)
+file_path <- "/home/tomas/Desktop/maestria/eea/CogED xDiag xVero.xlsx"
+dataAD <- read_excel(file_path, sheet = "CogEd AD", range = "B1:R478")
+
+
+
+dataCN <- read_excel(file_path, sheet = "CogEd CN", range = "A1:Q669")
+
+dataFTD <- read_excel(file_path, sheet = "CogEd FTD", range = "A1:Q274")
+
+cat("dataAD:",  dim(dataAD),  "\n")
+cat("dataCN:",  dim(dataCN),  "\n")
+cat("dataFTD:", dim(dataFTD), "\n")
+```
+
+## Limpieza de variables
+
+```{r}
+data <- rbind(dataAD, dataCN, dataFTD)
+data$clinical_diagnosis <- as.factor(data$clinical_diagnosis)
+data$cog_tmt_a_err <- as.numeric(ifelse(data$cog_tmt_a_err=="completed", 0, data$cog_tmt_a_err))
+data$cog_tmt_a_corr <- as.numeric(ifelse(data$cog_tmt_a_corr=="completed", 25, data$cog_tmt_a_corr))
+data$cog_tmt_b_err <- as.numeric(ifelse(data$cog_tmt_b_err=="completed", 0, data$cog_tmt_b_err))
+data$cog_tmt_b_corr <- as.numeric(ifelse(data$cog_tmt_b_corr=="completed", 25, data$cog_tmt_b_corr))
+data$cog_digits_forward_span <- as.numeric(ifelse(data$cog_digits_forward_span=="completed", 8, data$cog_digits_forward_span))
+data$cog_digits_backward_span <- as.numeric(ifelse(data$cog_digits_backward_span=="completed", 7, data$cog_digits_backward_span))
+data$cog_digits_forward_total <- ifelse(data$cog_digits_forward_total>16, NA, data$cog_digits_forward_total)
+data$cog_digits_backward_total <- ifelse(data$cog_digits_backward_total>14, NA, data$cog_digits_backward_total)
+data$cog_tmt_a <- ifelse(data$cog_tmt_a>150, NA, data$cog_tmt_a)
+data$cog_tmt_b <- ifelse(data$cog_tmt_b>300, NA, data$cog_tmt_b)
+```
+
+
+## Distribución de valores
+
+```{r}
+
+class(data)
+hist(data$cog_ed,
+     main = "Años de educación",
+     xlab = "Años",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     breaks = 20)
+```
+
+```{r}
+
+
+data <- data %>%
+  select(-codMP, -id_paciente) %>%
+  mutate(tests_no_hechos = rowSums(is.na(across(c(cog_digits_forward_total, cog_category_animals, cog_category_vegetables, cog_tmt_a, cog_tmt_b)))))
+
+```
+
+## Descarte de pacientes con 5 tests no hechos
+
+```{r}
+data <- data %>%
+  filter(tests_no_hechos < 5)
+```
+
+
+
+## Tabla 1 (considerando 3 categorias)
+
+```{r}
+tabla1 <- 
+  tbl_summary(
+    data = data,
+    by = clinical_diagnosis,          # para comparar grupos
+    include = c(                      # 👈 incluimos solo estas variables
+      cog_ed,
+      cog_digits_forward_total,
+      cog_digits_forward_span,
+      cog_digits_backward_total,
+      cog_digits_backward_span,
+      mmse_total,
+      cog_category_animals,
+      cog_category_vegetables,
+      cog_tmt_a,
+      cog_tmt_a_corr,
+      cog_tmt_a_err,
+      cog_tmt_b,
+      cog_tmt_b_corr,
+      cog_tmt_b_err
+    ),
+    missing = "ifany",
+    missing_text = "No realizado",
+    label = list(
+      cog_ed ~ "Años de educación",
+      cog_digits_forward_total  ~ "Digits forward total",
+      cog_digits_forward_span   ~ "Digits forward span",
+      cog_digits_backward_total ~ "Digits backwards total",
+      cog_digits_backward_span  ~ "Digits backwards span",
+      mmse_total                ~ "Mini mental",
+      cog_category_animals      ~ "Fluidez semántica (animales)",
+      cog_category_vegetables   ~ "Fluidez semántica (vegetales)",
+      cog_tmt_a       ~ "Atención sostenida (tiempo)",
+      cog_tmt_a_corr  ~ "Atención sostenida (correctas)",
+      cog_tmt_a_err   ~ "Atención sostenida (errores)",
+      cog_tmt_b       ~ "Funciones ejecutivas (tiempo)",
+      cog_tmt_b_corr  ~ "Funciones ejecutivas (correctas)",
+      cog_tmt_b_err   ~ "Funciones ejecutivas (errores)"
+    ),
+    type = list(                     # forzamos todas como continuas
+      cog_ed ~ "continuous",
+      cog_digits_forward_total  ~ "continuous",
+      cog_digits_forward_span   ~ "continuous",
+      cog_digits_backward_total ~ "continuous",
+      cog_digits_backward_span  ~ "continuous",
+      mmse_total                ~ "continuous",
+      cog_category_animals      ~ "continuous",
+      cog_category_vegetables   ~ "continuous",
+      cog_tmt_a       ~ "continuous",
+      cog_tmt_a_corr  ~ "continuous",
+      cog_tmt_a_err   ~ "continuous",
+      cog_tmt_b       ~ "continuous",
+      cog_tmt_b_corr  ~ "continuous",
+      cog_tmt_b_err   ~ "continuous"
+    ),
+    statistic = list(
+      all_continuous()  ~ "{median} ({p25}, {p75})",
+      all_categorical() ~ "{n} ({p}%)"
+    )
+  ) %>%
+  add_overall() %>%
+  add_p(
+    test = list(
+      all_continuous()  ~ "kruskal.test",
+      all_categorical() ~ "chisq.test"
+    )
+  ) %>%
+  bold_labels()
+
+tabla1
+
+```
+
+## Tabla 1 considerando AD vs FTD
+
+```{r}
+data2 <- data %>%
+  filter(clinical_diagnosis != "CN") 
+data2$clinical_diagnosis <- droplevels(data2$clinical_diagnosis)
+
+tabla1 <- 
+  tbl_summary(
+    data = data2,
+    by = clinical_diagnosis,          # para comparar grupos
+    include = c(                      # 👈 incluimos solo estas variables
+      cog_ed,
+      cog_digits_forward_total,
+      cog_digits_forward_span,
+      cog_digits_backward_total,
+      cog_digits_backward_span,
+      mmse_total,
+      cog_category_animals,
+      cog_category_vegetables,
+      cog_tmt_a,
+      cog_tmt_a_corr,
+      cog_tmt_a_err,
+      cog_tmt_b,
+      cog_tmt_b_corr,
+      cog_tmt_b_err
+    ),
+    missing = "ifany",
+    missing_text = "No realizado",
+    label = list(
+      cog_ed ~ "Años de educación",
+      cog_digits_forward_total  ~ "Digits forward total",
+      cog_digits_forward_span   ~ "Digits forward span",
+      cog_digits_backward_total ~ "Digits backwards total",
+      cog_digits_backward_span  ~ "Digits backwards span",
+      mmse_total                ~ "Mini mental",
+      cog_category_animals      ~ "Fluidez semántica (animales)",
+      cog_category_vegetables   ~ "Fluidez semántica (vegetales)",
+      cog_tmt_a       ~ "Atención sostenida (tiempo)",
+      cog_tmt_a_corr  ~ "Atención sostenida (correctas)",
+      cog_tmt_a_err   ~ "Atención sostenida (errores)",
+      cog_tmt_b       ~ "Funciones ejecutivas (tiempo)",
+      cog_tmt_b_corr  ~ "Funciones ejecutivas (correctas)",
+      cog_tmt_b_err   ~ "Funciones ejecutivas (errores)"
+    ),
+    type = list(                     # forzamos todas como continuas
+      cog_ed ~ "continuous",
+      cog_digits_forward_total  ~ "continuous",
+      cog_digits_forward_span   ~ "continuous",
+      cog_digits_backward_total ~ "continuous",
+      cog_digits_backward_span  ~ "continuous",
+      mmse_total                ~ "continuous",
+      cog_category_animals      ~ "continuous",
+      cog_category_vegetables   ~ "continuous",
+      cog_tmt_a       ~ "continuous",
+      cog_tmt_a_corr  ~ "continuous",
+      cog_tmt_a_err   ~ "continuous",
+      cog_tmt_b       ~ "continuous",
+      cog_tmt_b_corr  ~ "continuous",
+      cog_tmt_b_err   ~ "continuous"
+    ),
+    statistic = list(
+      all_continuous()  ~ "{median} ({p25}, {p75})",
+      all_categorical() ~ "{n} ({p}%)"
+    )
+  ) %>%
+  add_overall() %>%
+  add_p(
+    test = list(
+      all_continuous()  ~ "wilcox.test",
+      all_categorical() ~ "chisq.test"
+    )
+  ) %>%
+  bold_labels()
+
+tabla1
+```
+
+## Gráfico de correlaciones
+
+```{r}
+data_num <- data %>% 
+  select(where(is.numeric))
+
+mat_cor <- cor(data_num, use = "pairwise.complete.obs", method = "pearson")
+
+label_map <- c(
+  mmse_total                = "MMSE",
+  cog_digits_forward_total  = "DF total",
+  cog_digits_backward_total = "DB total",
+  cog_digits_forward_span   = "DF span",
+  cog_digits_backward_span  = "DB span",
+  cog_category_animals      = "Fluidez animales",
+  cog_category_vegetables   = "Fluidez vegetales",
+  cog_tmt_a       = "TMT-A (tiempo)",
+  cog_tmt_a_corr  = "TMT-A (corr.)",
+  cog_tmt_a_err   = "TMT-A (errores)",
+  cog_tmt_b       = "TMT-B (tiempo)",
+  cog_tmt_b_corr  = "TMT-B (corr.)",
+  cog_tmt_b_err   = "TMT-B (errores)"
+)
+
+mat_cor_labeled <- mat_cor
+colnames(mat_cor_labeled) <- label_map[colnames(mat_cor_labeled)]
+rownames(mat_cor_labeled) <- label_map[rownames(mat_cor_labeled)]
+
+
+paleta <- colorRampPalette(RColorBrewer::brewer.pal(11, "RdBu"))(100)
+corrplot(mat_cor_labeled,
+         method = "color",
+         type = "upper",
+         order = "hclust",
+         tl.cex = 0.8,
+         col = paleta)
+
+```
+
+## MODELOS LOGISTICOS
+
+### Con todas las variables
+
+```{r}
+modelo_todas <- glm(clinical_diagnosis~., data2, family=binomial)
+summary(modelo_todas)
+
+#EL VIF ES TAN ALTO QUE NO PUEDE CALCULARLO; solo dan signif cog_ed, animals, MMSE, tmt_a_err y tmt_b_err
+```
+```{r}
+#Veo qué variables tienen coeficientes de correlación MUY altos
+
+high_cor_pairs <- which(abs(mat_cor) > 0.70 & abs(mat_cor) < 1, arr.ind = TRUE)
+
+for(i in seq_len(nrow(high_cor_pairs))) {
+  r <- high_cor_pairs[i, ]
+  cat(
+    rownames(mat_cor)[r[1]],
+    "<-->",
+    colnames(mat_cor)[r[2]],
+    ": r =",
+    round(mat_cor[r[1], r[2]], 3),
+    "\n"
+  )
+}
+
+negative_cor_pairs <- which(abs(mat_cor) < -0.70 & abs(mat_cor) > -1, arr.ind = TRUE)
+for(i in seq_len(nrow(negative_cor_pairs))) {
+  r <- negative_cor_pairs[i, ]
+  cat(
+    rownames(mat_cor)[r[1]],
+    "<-->",
+    colnames(mat_cor)[r[2]],
+    ": r =",
+    round(mat_cor[r[1], r[2]], 3),
+    "\n"
+  )
+}
+
+```
+
+### Sacamos algunas muy correlacionadas
+
+```{r}
+modelo2 <- glm(clinical_diagnosis~cog_ed+mmse_total+cog_digits_forward_total + cog_digits_backward_total+cog_digits_forward_span+cog_digits_backward_span+ cog_category_animals+ cog_tmt_a + cog_tmt_a_err +cog_tmt_a_corr+ cog_tmt_b+cog_tmt_b_err +cog_tmt_b_corr+ tests_no_hechos, data2, family=binomial)
+summary(modelo2)
+vif(modelo2)
+```
+
+**VIFS altisimos de las variables con digitos. Pero primero calculemos un AUC de estos modelos**
+
+```{r}
+library(pROC)
+
+roc_todas <- roc(
+  response  = modelo_todas$y,          # la y que realmente usó glm()
+  predictor = fitted(modelo_todas)     # las probabilidades predichas
+)
+
+auc(roc_todas)
+
+plot(
+  roc_todas,
+  col = "#1B9E77",
+  lwd = 3,
+  main = "Curva ROC - Modelo AD vs FTD (todas las variables)",
+  legacy.axes = TRUE
+)
+
+auc_value <- auc(roc_todas)
+text(0.6, 0.2, labels = paste("AUC =", round(auc_value, 3)), cex = 1.2)
+
+
+
+
+```
+
+## Permutaciones
+
+### En cada variable para analizar importancia para el modelo (en delta AUC)
+
+```{r}
+perm_importance <- function(data, model_formula) {
+  # modelo base
+  modelo_base <- glm(model_formula, data = data2, family = binomial)
+  
+  # AUC base usando exactamente las filas que usó glm
+  auc_base <- roc(modelo_base$y, fitted(modelo_base))$auc
+  
+  # variables predictoras (sacamos la respuesta)
+  vars <- all.vars(model_formula)[-1]
+  results <- data.frame(variable = vars, delta_auc = NA_real_)
+  
+  for (v in vars) {
+    data_perm <- data2
+    data_perm[[v]] <- sample(data_perm[[v]])   # permutar variable v
+    
+    modelo_p <- glm(model_formula, data = data_perm, family = binomial)
+    
+    # AUC con variable permutada
+    auc_p <- roc(modelo_p$y, fitted(modelo_p))$auc
+    
+    results$delta_auc[results$variable == v] <- auc_base - auc_p
+  }
+  
+  list(
+    auc_base = auc_base,
+    importance = results
+  )
+}
+
+```
+
+```{r}
+library(dplyr)
+library(pROC)
+
+## 1) Asegurar binario AD vs FTD
+data2 <- data2 %>%
+  filter(clinical_diagnosis %in% c("AD", "FTD")) %>%
+  mutate(dx_bin = ifelse(clinical_diagnosis == "AD", 1, 0))
+
+## 2) Elegir variables
+vars <- c(
+  "cog_digits_backward_total",
+  "cog_digits_forward_total",
+  "cog_digits_backward_span",
+  "cog_digits_forward_span",
+  "cog_category_animals",
+  "cog_category_vegetables",
+  "cog_tmt_a",
+  "cog_tmt_a_err",
+  "cog_tmt_b",
+  "cog_tmt_b_err",
+  "cog_ed",
+  "mmse_total"
+)
+
+## 3) Armar fórmula con esas vars
+formula_base <- as.formula(
+  paste("dx_bin ~", paste(vars, collapse = " + "))
+)
+
+## 4) Correr permutaciones
+set.seed(1)
+perm_res <- perm_importance(data2, formula_base)
+
+
+perm_res$importance %>%
+  arrange(desc(delta_auc))
+
+```
+
