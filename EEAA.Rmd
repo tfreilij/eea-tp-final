@@ -299,6 +299,68 @@ corrplot(mat_cor_labeled,
 
 ```
 
+
+## Gráfico de correlaciones (simplificado)
+
+```{r}
+data_num <- data %>% 
+  select(where(is.numeric))
+
+mat_cor <- cor(data_num, use = "pairwise.complete.obs", method = "pearson")
+
+label_map <- c(
+  mmse_total                = "Desempeño Total (MMSE)",
+  cog_digits_forward_total  = "Digits Forward",
+  cog_digits_backward_total = "Digits Backward",
+  cog_category_animals      = "Fluidez animales",
+  cog_category_vegetables   = "Fluidez vegetales",
+  cog_tmt_a       = "Atención sostenida",
+  cog_tmt_b       = "Funciones Ejecutivas"
+)
+
+mat_cor_labeled <- mat_cor
+colnames(mat_cor_labeled) <- label_map[colnames(mat_cor_labeled)]
+rownames(mat_cor_labeled) <- label_map[rownames(mat_cor_labeled)]
+
+
+paleta <- colorRampPalette(RColorBrewer::brewer.pal(11, "RdBu"))(100)
+corrplot(mat_cor_labeled,
+         method = "color",
+         type = "upper",
+         order = "hclust",
+         tl.cex = 0.8,
+         col = paleta)
+
+```
+
+
+```{r}
+# Names you want to keep (those used in label_map)
+vars_to_keep <- names(label_map)
+
+# Filter only those numeric columns
+data_num <- data %>% 
+  select(all_of(vars_to_keep))
+
+# Compute correlation matrix
+mat_cor <- cor(data_num, use = "pairwise.complete.obs", method = "pearson")
+
+# Apply labels
+mat_cor_labeled <- mat_cor
+colnames(mat_cor_labeled) <- label_map[colnames(mat_cor_labeled)]
+rownames(mat_cor_labeled) <- label_map[rownames(mat_cor_labeled)]
+
+# Plot
+paleta <- colorRampPalette(RColorBrewer::brewer.pal(11, "RdBu"))(100)
+
+corrplot(mat_cor_labeled,
+         method = "color",
+         type = "upper",
+         order = "hclust",
+         tl.cex = 0.8,
+         col = paleta)
+
+```
 ## MODELOS LOGISTICOS
 
 ### Con todas las variables
