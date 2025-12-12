@@ -80,13 +80,36 @@ data$cog_tmt_b <- ifelse(data$cog_tmt_b>300, NA, data$cog_tmt_b)
 
 ```{r}
 
-class(data)
 hist(data$cog_ed,
      main = "Años de educación",
      xlab = "Años",
      ylab = "Frecuencia",
      col = "lightblue",
      breaks = 20)
+
+
+hist(dataAD$cog_ed,
+     main = "Años de educación AD",
+     xlab = "Años",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     breaks = 20)
+
+hist(dataCN$cog_ed,
+     main = "Años de educación CN",
+     xlab = "Años",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     breaks = 20)
+
+hist(dataFTD$cog_ed,
+     main = "Años de educación FTD",
+     xlab = "Años",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     breaks = 20)
+
+
 ```
 
 ```{r}
@@ -260,8 +283,45 @@ tabla1 <-
 tabla1
 ```
 
-## Gráfico de correlaciones
 
+
+## Función auxiliar para correlaciones
+
+```{r}
+
+plot_corr <- function(df, vars_to_keep, label_map, title = NULL) {
+  
+  # Filter only numeric columns listed in vars_to_keep
+  data_num <- df %>% 
+    select(all_of(vars_to_keep))
+  
+  # Compute correlation matrix
+  mat_cor <- cor(data_num, use = "pairwise.complete.obs", method = "pearson")
+  
+  # Apply labels
+  mat_cor_labeled <- mat_cor
+  colnames(mat_cor_labeled) <- label_map[colnames(mat_cor_labeled)]
+  rownames(mat_cor_labeled) <- label_map[rownames(mat_cor_labeled)]
+  
+  # Palette
+  paleta <- colorRampPalette(RColorBrewer::brewer.pal(11, "RdBu"))(100)
+  
+  # Plot
+  corrplot(mat_cor_labeled,
+           method = "color",
+           type = "upper",
+           order = "hclust",
+           tl.cex = 0.8,
+           col = paleta,
+           title = title,
+           mar = c(0,0,2,0))
+}
+
+vars_to_keep <- names(label_map)
+```
+
+
+## Gráfico de correlaciones
 ```{r}
 data_num <- data %>% 
   select(where(is.numeric))
@@ -284,18 +344,9 @@ label_map <- c(
   cog_tmt_b_err   = "TMT-B (errores)"
 )
 
-mat_cor_labeled <- mat_cor
-colnames(mat_cor_labeled) <- label_map[colnames(mat_cor_labeled)]
-rownames(mat_cor_labeled) <- label_map[rownames(mat_cor_labeled)]
+vars_to_keep <- names(label_map)
 
-
-paleta <- colorRampPalette(RColorBrewer::brewer.pal(11, "RdBu"))(100)
-corrplot(mat_cor_labeled,
-         method = "color",
-         type = "upper",
-         order = "hclust",
-         tl.cex = 0.8,
-         col = paleta)
+plot_corr(data,  vars_to_keep, label_map, title = "Correlaciones")
 
 ```
 
@@ -318,47 +369,47 @@ label_map <- c(
   cog_tmt_b       = "Funciones Ejecutivas"
 )
 
-mat_cor_labeled <- mat_cor
-colnames(mat_cor_labeled) <- label_map[colnames(mat_cor_labeled)]
-rownames(mat_cor_labeled) <- label_map[rownames(mat_cor_labeled)]
 
+vars_to_keep <- names(label_map)
 
-paleta <- colorRampPalette(RColorBrewer::brewer.pal(11, "RdBu"))(100)
-corrplot(mat_cor_labeled,
-         method = "color",
-         type = "upper",
-         order = "hclust",
-         tl.cex = 0.8,
-         col = paleta)
+plot_corr(data,  vars_to_keep, label_map, title = "Correlaciones")
 
 ```
 
 
 ```{r}
 # Names you want to keep (those used in label_map)
+label_map <- c(
+  mmse_total                = "Desempeño Total (MMSE)",
+  cog_digits_forward_total  = "Digits Forward",
+  cog_digits_backward_total = "Digits Backward",
+  cog_category_animals      = "Fluidez animales",
+  cog_category_vegetables   = "Fluidez vegetales",
+  cog_tmt_a       = "Atención sostenida",
+  cog_tmt_b       = "Funciones Ejecutivas"
+)
+
 vars_to_keep <- names(label_map)
 
-# Filter only those numeric columns
-data_num <- data %>% 
-  select(all_of(vars_to_keep))
+plot_corr(dataAD,  vars_to_keep, label_map, title = "Correlaciones - AD")
+plot_corr(dataCN,  vars_to_keep, label_map, title = "Correlaciones - CN")
+plot_corr(dataFTD, vars_to_keep, label_map, title = "Correlaciones - FTD")
 
-# Compute correlation matrix
-mat_cor <- cor(data_num, use = "pairwise.complete.obs", method = "pearson")
+```
+```{r}
 
-# Apply labels
-mat_cor_labeled <- mat_cor
-colnames(mat_cor_labeled) <- label_map[colnames(mat_cor_labeled)]
-rownames(mat_cor_labeled) <- label_map[rownames(mat_cor_labeled)]
+label_map <- c(
+  mmse_total                = "Desempeño Total (MMSE)",
+  cog_digits_forward_total  = "Memoria",
+  cog_category_animals      = "Lenguaje",
+  cog_tmt_b       = "Funciones Ejecutivas - Atención"
+)
 
-# Plot
-paleta <- colorRampPalette(RColorBrewer::brewer.pal(11, "RdBu"))(100)
+vars_to_keep <- names(label_map)
 
-corrplot(mat_cor_labeled,
-         method = "color",
-         type = "upper",
-         order = "hclust",
-         tl.cex = 0.8,
-         col = paleta)
+plot_corr(dataAD,  vars_to_keep, label_map, title = "Correlaciones - AD")
+plot_corr(dataCN,  vars_to_keep, label_map, title = "Correlaciones - CN")
+plot_corr(dataFTD, vars_to_keep, label_map, title = "Correlaciones - FTD")
 
 ```
 ## MODELOS LOGISTICOS
