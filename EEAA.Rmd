@@ -80,37 +80,36 @@ data$cog_tmt_b <- ifelse(data$cog_tmt_b>300, NA, data$cog_tmt_b)
 
 ```{r}
 
-hist(data$cog_ed,
-     main = "Años de educación",
-     xlab = "Años",
-     ylab = "Frecuencia",
-     col = "lightblue",
-     breaks = 20)
+plot_col_hist <- function(data, title,column) {
+  hist(data[[column]],
+       main = title,
+       xlab = "Años",
+       ylab = "Frecuencia",
+       col = "lightblue",
+       breaks = 20)
+}
 
-
-hist(dataAD$cog_ed,
-     main = "Años de educación AD",
-     xlab = "Años",
-     ylab = "Frecuencia",
-     col = "lightblue",
-     breaks = 20)
-
-hist(dataCN$cog_ed,
-     main = "Años de educación CN",
-     xlab = "Años",
-     ylab = "Frecuencia",
-     col = "lightblue",
-     breaks = 20)
-
-hist(dataFTD$cog_ed,
-     main = "Años de educación FTD",
-     xlab = "Años",
-     ylab = "Frecuencia",
-     col = "lightblue",
-     breaks = 20)
+plot_col_hist(data,   "Años de educación","cog_ed")
+plot_col_hist(dataAD, "Años de educación AD","cog_ed")
+plot_col_hist(dataCN, "Años de educación CN","cog_ed")
+plot_col_hist(dataFTD, "Años de educación FTD","cog_ed")
 
 
 ```
+
+```{r}
+
+
+plot_col_hist(data, "cog_digits_forward_total","cog_digits_forward_total")
+plot_col_hist(data, "cog_digits_backward_total","cog_digits_backward_total")
+plot_col_hist(data, "mmse_total","mmse_total")
+plot_col_hist(data, "cog_category_animals","cog_category_animals")
+plot_col_hist(data, "cog_category_vegetables","cog_category_vegetables")
+plot_col_hist(data, "cog_tmt_a","cog_tmt_a")
+plot_col_hist(data, "cog_tmt_b","cog_tmt_b")
+
+```
+
 
 ```{r}
 
@@ -412,6 +411,42 @@ plot_corr(dataCN,  vars_to_keep, label_map, title = "Correlaciones - CN")
 plot_corr(dataFTD, vars_to_keep, label_map, title = "Correlaciones - FTD")
 
 ```
+```{r}
+
+# Columnas y labels
+label_map <- c(
+  mmse_total                = "Desempeño Total (MMSE)",
+  cog_digits_forward_total  = "Memoria",
+  cog_category_animals      = "Lenguaje",
+  cog_tmt_a                 = "Atención",
+  cog_tmt_b                 = "Funciones Ejecutivas - Atención"
+)
+
+vars_to_keep <- names(label_map)
+
+# Graficar correlaciones originales
+plot_corr(dataAD, vars_to_keep, label_map, title = "Correlaciones - AD (original)")
+
+# Número de permutaciones a mostrar
+n_perm_show <- 5
+set.seed(123) # para reproducibilidad
+
+# Elegimos la columna a permutar
+column_to_permute <- "cog_tmt_a"
+
+# Generamos 5 permutaciones diferentes
+for (i in 1:n_perm_show) {
+  data_perm <- dataAD
+  data_perm[[column_to_permute]] <- sample(data_perm[[column_to_permute]])
+  
+  # Graficar correlación de esta permutación
+  plot_corr(data_perm, vars_to_keep, label_map, 
+            title = paste("Correlaciones - AD (perm", i, ")"))
+}
+
+
+```
+
 ## MODELOS LOGISTICOS
 
 ### Con todas las variables
