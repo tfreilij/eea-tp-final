@@ -316,7 +316,6 @@ plot_corr <- function(df, vars_to_keep, label_map, title = NULL) {
            mar = c(0,0,2,0))
 }
 
-vars_to_keep <- names(label_map)
 ```
 
 
@@ -445,6 +444,173 @@ for (i in 1:n_perm_show) {
 }
 
 
+```
+
+```{r}
+
+# Columnas y labels
+label_map <- c(
+  mmse_total                = "Desempeño Total (MMSE)",
+  cog_digits_forward_total  = "Memoria",
+  cog_category_animals      = "Lenguaje",
+  cog_tmt_a                 = "Atención",
+  cog_tmt_b                 = "Funciones Ejecutivas - Atención"
+)
+
+vars_to_keep <- names(label_map)
+
+# Correlación original
+plot_corr(dataAD, vars_to_keep, label_map,
+          title = "Correlaciones - AD (original)")
+
+# Número de permutaciones a mostrar por par
+n_perm_show <- 5
+set.seed(123)
+
+# Todas las combinaciones de pares
+pairs <- combn(vars_to_keep, 2, simplify = FALSE)
+
+# Loop por cada par de columnas
+for (pair in pairs) {
+  
+  col_perm <- pair[1]
+  col_ref  <- pair[2]
+  
+  for (i in seq_len(n_perm_show)) {
+    
+    data_perm <- dataAD
+    data_perm[[col_perm]] <- sample(data_perm[[col_perm]])
+    
+    plot_corr(
+      data_perm,
+      vars_to_keep,
+      label_map,
+      title = paste0(
+        "AD | permutando: ", label_map[col_perm],
+        " vs ", label_map[col_ref],
+        " (perm ", i, ")"
+      )
+    )
+  }
+}
+
+
+```
+
+```{r}
+
+# Número de permutaciones numéricas
+n_perm <- 1000
+set.seed(123)
+
+# Todas las combinaciones de pares
+pairs <- combn(vars_to_keep, 2, simplify = FALSE)
+
+# Dataframe para guardar resultados
+cor_results <- data.frame(
+  var_1 = character(),
+  var_2 = character(),
+  cor_original = numeric(),
+  cor_perm_mean = numeric(),
+  cor_perm_sd = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (pair in pairs) {
+  
+  v1 <- pair[1]
+  v2 <- pair[2]
+  
+  # Correlación original
+  cor_orig <- cor(
+    dataAD[[v1]],
+    dataAD[[v2]],
+    use = "complete.obs"
+  )
+  
+  # Correlaciones permutadas
+  cor_perm <- numeric(n_perm)
+  
+  for (i in seq_len(n_perm)) {
+    df_perm <- dataAD
+    df_perm[[v1]] <- sample(df_perm[[v1]])
+    
+    cor_perm[i] <- cor(
+      df_perm[[v1]],
+      df_perm[[v2]],
+      use = "complete.obs"
+    )
+  }
+  
+  # Guardar resultados
+  cor_results <- rbind(
+    cor_results,
+    data.frame(
+      var_1 = label_map[v1],
+      var_2 = label_map[v2],
+      cor_original = cor_orig,
+      cor_perm_mean = mean(cor_perm),
+      cor_perm_sd = sd(cor_perm)
+    )
+  )
+}
+
+cor_results
+
+
+```
+
+```{r}
+
+set.seed(123)
+
+# columnas a analizar
+v1 <- "cog_tmt_a"
+v2 <- "cog_tmt_b"
+
+# correlación original
+cor_original <- cor(
+  dataAD[[v1]],
+  dataAD[[v2]],
+  use = "complete.obs"
+)
+
+# número de permutaciones a mostrar
+n_perm_show <- 5
+
+# correlaciones permutadas
+cor_perm <- numeric(n_perm_show)
+
+for (i in seq_len(n_perm_show)) {
+  df_perm <- dataAD
+  df_perm[[v1]] <- sample(df_perm[[v1]])
+  
+  cor_perm[i] <- cor(
+    df_perm[[v1]],
+    df_perm[[v2]],
+    use = "complete.obs"
+  )
+}
+
+# armar dataframe para graficar
+cor_df <- data.frame(
+  tipo = c("Original", paste0("Perm ", 1:n_perm_show)),
+  correlacion = c(cor_original, cor_perm)
+)
+
+cor_df
+
+barplot(
+  cor_df$correlacion,
+  names.arg = cor_df$tipo,
+  ylim = c(-1, 1),
+  ylab = "Correlación de Pearson",
+  main = paste(
+    label_map[v1], "vs", label_map[v2]
+  )
+)
+
+abline(h = 0, lty = 2)
 ```
 
 ## MODELOS LOGISTICOS
