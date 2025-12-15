@@ -40,11 +40,11 @@ library(caret)
 library(pROC)
 ```
 
-## Carga de datos
+## Carga de dato
 
 ```{r}
 library(readxl)
-file_path <- "/home/tomas/Desktop/maestria/eea/CogED xDiag xVero.xlsx"
+file_path <- "/home/guido/Downloads/CogED xDiag xVero.xlsx"
 dataAD <- read_excel(file_path, sheet = "CogEd AD", range = "B1:R478")
 
 
@@ -496,6 +496,681 @@ for (pair in pairs) {
 
 
 ```
+
+```{r}
+```
+
+
+```{r}
+#Limpio la base de las variables de digits span
+
+#todos los datos
+data <- data %>%
+  select(-cog_digits_backward_span, -cog_digits_forward_span, -tests_no_hechos)
+
+#solamente AD y FTD
+data2 <- data %>%
+  filter(clinical_diagnosis != "CN") 
+data2$clinical_diagnosis <- droplevels(data2$clinical_diagnosis)
+  
+```
+
+```{r}
+vars <- colnames(data)
+vars <- vars[2:13]
+```
+
+
+```{r}
+#Test de correlaciones luego de las permutaciones. Permuta en cada par de variables. N=10000. Luego ordena según cuán desviado está de la media el delta de correlación (o sea cuánto)
+
+perm_corr_test <- function(data, x, y, n_perm = 10000, method = "spearman") {
+  
+  r_obs <- cor(data[[x]], data[[y]], method = method, use = "complete.obs")
+  
+  r_perm <- replicate(n_perm, {
+    cor(
+      sample(data[[x]]),
+      data[[y]],
+      method = method,
+      use = "complete.obs"
+    )
+  })
+  
+  tibble(
+    var_x = x,
+    var_y = y,
+    r_obs = r_obs,
+    r_perm_mean = mean(r_perm),
+    r_perm_sd = sd(r_perm),
+    delta_r = r_obs - mean(r_perm),
+    p_value = (sum(abs(r_perm) >= abs(r_obs)) + 1) / (n_perm + 1),
+    z_perm = (r_obs - mean(r_perm)) / sd(r_perm)
+
+  )
+}
+
+
+
+library(purrr)
+
+results_all <- map_dfr(
+  combn(vars, 2, simplify = FALSE),
+  ~ perm_corr_test(data, .x[1], .x[2], n_perm = 10000)
+)
+
+results_all <- results_all |>
+  dplyr::mutate(
+    p_adj = p.adjust(p_value, method = "BH")
+  )
+
+results_all |>
+  arrange(desc(abs(z_perm)))
+
+```
+
+
+```{r}
+#Ahora esto lo que arma es un score de fuerza de colinealidad sumando los valores absolutos de cada delta r para cada permutación. Con lo cual es un valor más general sobre colinealidad de esa variable.
+
+colinearity_score <- function(data, x, vars, n_perm = 10000, method = "spearman") {
+  
+  others <- setdiff(vars, x)
+  
+  deltas <- sapply(others, function(y) {
+    
+    r_obs <- cor(data[[x]], data[[y]], method = method, use = "complete.obs")
+    
+    r_perm <- replicate(
+      n_perm,
+      cor(sample(data[[x]]), data[[y]], method = method, use = "complete.obs")
+    )
+    
+    r_obs - mean(r_perm)
+  })
+  
+  tibble::tibble(
+    var = x,
+    colinearity_strength = sum(abs(deltas)),   # fuerza total
+    mean_delta = mean(abs(deltas)),             # promedio
+    max_delta = max(abs(deltas)),               # peor caso
+    n_links = length(deltas)                    # cuántas variables compara
+  )
+}
+
+library(purrr)
+library(dplyr)
+
+colinearity_tbl <- map_dfr(
+  vars,
+  ~ colinearity_score(
+      data  = data,
+      x     = .x,
+      vars  = vars,
+      n_perm = 10000   # o 5000 / 10000 si querés
+    )
+)
+
+colinearity_tbl %>%
+  arrange(desc(colinearity_strength))
+
+
+```
+```{r}
+#Ahora hago lo mismo pero solamente con la data AD + FTD
+
+results_all <- map_dfr(
+  combn(vars, 2, simplify = FALSE),
+  ~ perm_corr_test(data2, .x[1], .x[2], n_perm = 10000)
+)
+
+results_all <- results_all |>
+  dplyr::mutate(
+    p_adj = p.adjust(p_value, method = "BH")
+  )
+
+results_all |>
+  arrange(desc(abs(z_perm)))
+
+```
+
+```{r}
+colinearity_tbl <- map_dfr(
+  vars,
+  ~ colinearity_score(
+      data  = data2,
+      x     = .x,
+      vars  = vars,
+      n_perm = 10000   # o 5000 / 10000 si querés
+    )
+)
+
+colinearity_tbl %>%
+  arrange(desc(colinearity_strength))
+
+```
+
+```{r}
+#Modelo logistico con todas las variables para ver cuales dan "significativas"
+modelo_todas <- glm(clinical_diagnosis~., data2, family=binomial)
+summary(modelo_todas)
+vif(modelo_todas)
+
+#A pesar de que las variables son colineales, el VIF no es preocupantemente alto
+```
+
+```{r}
+#Hago modelo logistico con todas las variables y pero evaluando el AUC por cross validation
+
+library(dplyr)
+library(rsample)
+library(purrr)
+library(pROC)
+
+#Funcion para calcular AUC de regresión logística por CV
+
+cv_auc_logistic <- function(data, outcome, predictors, v = 10) {
+  
+  df <- data[, c(outcome, predictors)]
+  
+  formula <- as.formula(
+    paste(outcome, "~", paste(predictors, collapse = " + "))
+  )
+  
+  folds <- vfold_cv(
+    df,
+    v = v,
+    strata = !!sym(outcome)
+  )
+  
+  aucs <- map_dbl(folds$splits, function(split) {
+    
+    train <- analysis(split)
+    test  <- assessment(split)
+    
+    fit <- glm(
+      formula,
+      data = train,
+      family = binomial()
+    )
+    
+    prob <- predict(fit, test, type = "response")
+    
+    roc(
+      response  = test[[outcome]],
+      predictor = prob,
+      quiet = TRUE
+    )$auc
+  })
+  
+  tibble(
+    auc_mean = mean(aucs),
+    auc_sd   = sd(aucs),
+    auc_min  = min(aucs),
+    auc_max  = max(aucs)
+  )
+}
+
+```
+
+```{r}
+
+#Calculo con todas las variables, AUC medio de 0.67
+set.seed(123)
+
+auc_full <- cv_auc_logistic(
+  data       = data2,
+  outcome    = "clinical_diagnosis",
+  predictors = vars,
+  v          = 10
+)
+
+auc_full
+
+```
+
+```{r}
+#Tenia este "orden" de "Fortaleza de colinealidad". Voy a ir sacando de a una y a analizar el AUC
+colinearity_tbl %>%
+  arrange(desc(colinearity_strength))
+```
+
+```{r}
+#Voy sacando de a una y calculando, sumo todo a una tabla
+
+
+vars_reduced <- c("cog_tmt_a", "cog_digits_backward_total", "mmse_total","cog_category_animals", "cog_digits_forward_total", "cog_category_vegetables", "cog_tmt_b_corr", "cog_tmt_a_corr", "cog_ed")
+
+set.seed(123)
+
+auc_reduced <- cv_auc_logistic(
+  data       = data2,
+  outcome    = "clinical_diagnosis",
+  predictors = vars_reduced,
+  v          = 10
+)
+
+auc_reduced
+```
+```{r}
+vars_reduced2 <- c("cog_digits_backward_total", "mmse_total","cog_category_animals", "cog_digits_forward_total", "cog_category_vegetables", "cog_tmt_b_corr", "cog_tmt_a_corr", "cog_ed")
+
+set.seed(123)
+
+auc_reduced2 <- cv_auc_logistic(
+  data       = data2,
+  outcome    = "clinical_diagnosis",
+  predictors = vars_reduced2,
+  v          = 10
+)
+
+auc_reduced2
+```
+```{r}
+vars_reduced3 <- c( "mmse_total","cog_category_animals", "cog_digits_forward_total", "cog_category_vegetables","cog_tmt_b_corr", "cog_tmt_a_corr",  "cog_ed")
+
+set.seed(123)
+
+auc_reduced3 <- cv_auc_logistic(
+  data       = data2,
+  outcome    = "clinical_diagnosis",
+  predictors = vars_reduced3,
+  v          = 10
+)
+
+auc_reduced3
+```
+```{r}
+vars_reduced4 <- c("cog_category_animals", "cog_digits_forward_total", "cog_category_vegetables",  "cog_tmt_b_corr", "cog_tmt_a_corr", "cog_ed")
+
+set.seed(123)
+
+auc_reduced4 <- cv_auc_logistic(
+  data       = data2,
+  outcome    = "clinical_diagnosis",
+  predictors = vars_reduced4,
+  v          = 10
+)
+
+auc_reduced4
+```
+
+```{r}
+#A medida que sacamos variables por colinealidad, PERDEMOS AUC
+
+tablaauc <- rbind(auc_reduced, auc_reduced2, auc_reduced3, auc_reduced4)
+rownames(tablaauc) <- c("Sacando 1 variable", "Sacando 2 variables", "Sacando 3 variables", "Sacando 4 variables")
+tablaauc
+```
+
+```{r}
+#Entonces probamos hacer Elastic Net (Lasso + Ridge, o cada una de ellas) para manejar colinealidad y seleccionar variables
+
+library(glmnet)
+library(pROC)
+library(rsample)
+library(purrr)
+library(dplyr)
+
+cv_auc_elastic <- function(data, outcome, predictors, alpha = 0.5, v = 10, seed = 123) {
+  
+  set.seed(seed)
+  
+  folds <- vfold_cv(data, v = v, strata = !!sym(outcome))
+  
+  aucs <- purrr::map_dbl(seq_along(folds$splits), function(i) {
+    
+    set.seed(seed + i)   # 🔴 CLAVE
+    
+    split <- folds$splits[[i]]
+    train <- analysis(split)
+    test  <- assessment(split)
+    
+    X_train <- model.matrix(
+      as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))),
+      train
+    )[,-1]
+    
+    X_test <- model.matrix(
+      as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))),
+      test
+    )[,-1]
+    
+    y_train <- train[[outcome]]
+    y_test  <- test[[outcome]]
+    
+    cv_fit <- cv.glmnet(
+      X_train,
+      y_train,
+      family = "binomial",
+      alpha = alpha,
+      nfolds = 10   # fijar folds internos
+    )
+    
+    prob <- predict(cv_fit, X_test, s = "lambda.min", type = "response")
+    
+    pROC::roc(y_test, as.vector(prob), quiet = TRUE)$auc
+  })
+  
+  tibble::tibble(
+    model = paste0("Elastic Net (alpha=", alpha, ")"),
+    auc_mean = mean(aucs),
+    auc_sd   = sd(aucs)
+  )
+}
+
+```
+
+```{r}
+data2_clean <- data2[, c("clinical_diagnosis", vars)] %>%
++     na.omit()
+
+
+#Ridge es el mejor, porque regulariza y maneja la colinealidad pero no elimina variables
+
+auc_enet_ridge <- cv_auc_elastic(
+  data       = data2_clean,
+  outcome    = "clinical_diagnosis",
+  predictors = vars,
+  alpha      = 0,
+  v          = 10
+)
+
+auc_enet_ridge
+
+```
+```{r}
+auc_enet <- cv_auc_elastic(
+  data       = data2_clean,
+  outcome    = "clinical_diagnosis",
+  predictors = vars,
+  alpha      = 0.5,
+  v          = 10
+)
+
+auc_enet
+
+```
+```{r}
+auc_enet_lasso <- cv_auc_elastic(
+  data       = data2_clean,
+  outcome    = "clinical_diagnosis",
+  predictors = vars,
+  alpha      = 1,
+  v          = 10
+)
+
+auc_enet_lasso
+
+```
+
+
+```{r}
+#Esta calcula tambien los coeficientes para ver qué selecciona Lasso
+
+cv_auc_elastic_with_coefs <- function(
+  data, outcome, predictors,
+  alpha = 1, v = 10, seed = 123
+) {
+  
+  set.seed(seed)
+  folds <- vfold_cv(data, v = v, strata = !!sym(outcome))
+  
+  aucs <- numeric(v)
+  selected_vars <- vector("list", v)
+  
+  for (i in seq_along(folds$splits)) {
+    
+    set.seed(seed + i)
+    
+    split <- folds$splits[[i]]
+    train <- analysis(split)
+    test  <- assessment(split)
+    
+    X_train <- model.matrix(
+      as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))),
+      train
+    )[,-1]
+    
+    X_test <- model.matrix(
+      as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))),
+      test
+    )[,-1]
+    
+    y_train <- train[[outcome]]
+    y_test  <- test[[outcome]]
+    
+    cv_fit <- cv.glmnet(
+      X_train, y_train,
+      family = "binomial",
+      alpha = alpha,
+      nfolds = 5
+    )
+    
+    # --- AUC ---
+    prob <- predict(cv_fit, X_test, s = "lambda.min", type = "response")
+    aucs[i] <- pROC::roc(y_test, as.vector(prob), quiet = TRUE)$auc
+    
+    # --- VARIABLES SELECCIONADAS ---
+    coefs <- coef(cv_fit, s = "lambda.min")
+    selected_vars[[i]] <- rownames(coefs)[as.numeric(coefs) != 0]
+  }
+  
+  tibble::tibble(
+    auc_mean = mean(aucs),
+    auc_sd   = sd(aucs),
+    selected_vars = list(unlist(selected_vars))
+  )
+}
+
+```
+
+```{r}
+res_lasso <- cv_auc_elastic_with_coefs(
+  data2_clean,
+  "clinical_diagnosis",
+  vars,
+  alpha = 1
+)
+
+```
+
+```{r}
+
+#Aca se ve la importancia Lasso de cada variable
+library(dplyr)
+
+lasso_importance <- tibble(var = res_lasso$selected_vars[[1]]) %>%
+  count(var) %>%
+  mutate(freq = n / 10) %>%   # 10 folds
+  arrange(desc(freq))
+
+lasso_importance
+```
+
+```{r}
+#Ahora calculo la importancia por permutación de cada variable: de a una variable, permuto y veo cuánto cambia el AUC
+
+perm_importance_cv <- function(
+  data, outcome, predictors,
+  alpha = 0, v = 10, n_perm = 20, seed = 123
+) {
+  
+  set.seed(seed)
+  folds <- rsample::vfold_cv(data, v = v, strata = !!sym(outcome))
+  
+  all_imp <- list()
+  
+  for (i in seq_along(folds$splits)) {
+    
+    set.seed(seed + i)
+    
+    split <- folds$splits[[i]]
+    train <- rsample::analysis(split)
+    test  <- rsample::assessment(split)
+    
+    X_train <- model.matrix(
+      as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))),
+      train
+    )[,-1]
+    
+    X_test <- model.matrix(
+      as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))),
+      test
+    )[,-1]
+    
+    y_train <- train[[outcome]]
+    y_test  <- test[[outcome]]
+    
+    # 🔴 USAR cv.glmnet
+    cv_fit <- glmnet::cv.glmnet(
+      X_train, y_train,
+      family = "binomial",
+      alpha = alpha,
+      nfolds = 5
+    )
+    
+    prob_base <- predict(
+      cv_fit,
+      X_test,
+      s = "lambda.min",
+      type = "response"
+    )
+    
+    auc_base <- pROC::roc(
+      y_test,
+      as.vector(prob_base),
+      quiet = TRUE
+    )$auc
+    
+    for (var in colnames(X_test)) {
+      
+      auc_perm <- replicate(n_perm, {
+        Xp <- X_test
+        Xp[, var] <- sample(Xp[, var])
+        prob <- predict(
+          cv_fit,
+          Xp,
+          s = "lambda.min",
+          type = "response"
+        )
+        pROC::roc(y_test, as.vector(prob), quiet = TRUE)$auc
+      })
+      
+      all_imp[[length(all_imp) + 1]] <- tibble::tibble(
+        var = var,
+        delta_auc = auc_base - mean(auc_perm)
+      )
+    }
+  }
+  
+  dplyr::bind_rows(all_imp) %>%
+    dplyr::group_by(var) %>%
+    dplyr::summarise(
+      mean_delta_auc = mean(delta_auc),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(desc(mean_delta_auc))
+}
+
+```
+
+```{r}
+#Se ve que la importancia por permutación (o sea importancia de cada variable en la capacidad predictiva del modelo) es diferente que la importancia de las variables segun Lasso
+set.seed(123)
+
+perm_imp_ridge <- perm_importance_cv(
+  data       = data2_clean,
+  outcome    = "clinical_diagnosis",
+  predictors = vars,
+  alpha      = 0,      # 🔑 Ridge
+  v          = 10,     # CV externo
+  n_perm     = 20,     # permutaciones por variable por fold
+  seed       = 123
+)
+
+perm_imp_ridge
+
+```
+
+
+```{r}
+library(dplyr)
+
+# Permutation importance (Ridge)
+perm_tbl <- perm_imp_ridge %>%
+  rename(
+    var = var,
+    delta_auc = mean_delta_auc
+  )
+
+# LASSO stability (la tuya)
+lasso_tbl <- lasso_importance %>%
+  rename(
+    var = var,
+    lasso_freq = freq
+  )
+
+# Unir todo
+importance_tbl <- perm_tbl %>%
+  left_join(lasso_tbl, by = "var") %>%
+  mutate(
+    lasso_freq = ifelse(is.na(lasso_freq), 0, lasso_freq)
+  )
+importance_tbl
+```
+```{r}
+#Si bien lasso y la importancia por permutaciones coinciden en varias variables, en otras no tanto. Veamos el grafico
+
+library(ggplot2)
+library(ggrepel)
+
+ggplot(
+  importance_tbl,
+  aes(x = lasso_freq, y = delta_auc, label = var)
+) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_text_repel(
+    size = 4,
+    max.overlaps = Inf,
+    box.padding = 0.5,
+    point.padding = 0.3,
+    min.segment.length = 0
+  ) +
+  geom_vline(xintercept = 0.5, linetype = 3, color = "grey50") +
+  geom_hline(yintercept = median(importance_tbl$delta_auc, na.rm = TRUE),
+             linetype = 3, color = "grey50") +
+  scale_x_continuous(
+    limits = c(0, 1.05),
+    breaks = c(0, 0.25, 0.5, 0.75, 1)
+  ) +
+  labs(
+    x = "Estabilidad LASSO (frecuencia de selección)",
+    y = "Importancia predictiva (ΔAUC permutado)",
+    title = "Importancia de variables: selección vs contribución predictiva",
+    subtitle = "Comparación entre estabilidad bajo LASSO y pérdida de AUC al permutar"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+```{r}
+#Entonces tengo: Variables imprescindibles, arriba a la derecha; variables prescindibles en todos los sentidos, abajo a la izquierda
+#Pruebo sacar las variables prescindibles por AUC y vuelvo a calcular AUC: MEJORA un poco! a 0.696
+
+vars2 <- c("mmse_total", "cog_category_animals", "cog_tmt_b", "cog_ed")
+auc_enet_ridge <- cv_auc_elastic(
+  data       = data2_clean,
+  outcome    = "clinical_diagnosis",
+  predictors = vars2,
+  alpha      = 0,
+  v          = 10
+)
+
+auc_enet_ridge
+
+```
+## Desde acá en adelante creo que no dejaría nada
 
 ```{r}
 
