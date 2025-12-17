@@ -376,7 +376,6 @@ plot_corr(data,  vars_to_keep, label_map, title = "Correlaciones")
 
 
 ```{r}
-# Names you want to keep (those used in label_map)
 label_map <- c(
   mmse_total                = "Desempeño Total (MMSE)",
   cog_digits_forward_total  = "Digits Forward",
@@ -497,8 +496,6 @@ for (pair in pairs) {
 
 ```
 
-```{r}
-```
 
 
 ```{r}
@@ -520,6 +517,43 @@ vars <- colnames(data)
 vars <- vars[2:13]
 ```
 
+```{r}
+#Cambio los nombres de las variables
+label_map <- c(
+  cog_ed                   = "Nivel educativo",
+  cog_digits_forward_total = "Memoria inmediata",
+  cog_digits_backward_total= "Memoria de trabajo",
+  mmse_total               = "MMSE",
+  cog_category_animals     = "Fluidez (animales)",
+  cog_category_vegetables  = "Fluidez (vegetales)",
+  cog_tmt_a                = "Atención",
+  cog_tmt_b                = "Funciones ejecutivas",
+  cog_tmt_a_err            = "Errores de atención",
+  cog_tmt_b_err            = "Errores ejecutivos",
+  cog_tmt_a_corr           = "Correctas atención",
+  cog_tmt_b_corr           = "Correctas ejecutivas"
+)
+
+vars <- label_map[vars]
+vars_original <- names(label_map)
+
+
+data <- data%>%
+  rename_with(
+    ~ ifelse(.x %in% names(label_map), label_map[.x], .x),
+    .cols = all_of(vars_original)
+  )
+
+data2<- data2 %>%
+rename_with(
+    ~ ifelse(.x %in% names(label_map), label_map[.x], .x),
+    .cols = all_of(vars_original)
+  )
+
+
+```
+
+## Correlaciones entre variables post permutaciones
 
 ```{r}
 #Test de correlaciones luego de las permutaciones. Permuta en cada par de variables. N=10000. Luego ordena según cuán desviado está de la media el delta de correlación (o sea cuánto)
@@ -562,13 +596,13 @@ results_all <- map_dfr(
 results_all <- results_all |>
   dplyr::mutate(
     p_adj = p.adjust(p_value, method = "BH")
-  )
+  ) 
 
 results_all |>
   arrange(desc(abs(z_perm)))
 
 ```
-
+## "Score" de colinealidad
 
 ```{r}
 #Ahora esto lo que arma es un score de fuerza de colinealidad sumando los valores absolutos de cada delta r para cada permutación. Con lo cual es un valor más general sobre colinealidad de esa variable.
@@ -616,6 +650,8 @@ colinearity_tbl %>%
 
 
 ```
+### AD vs FTD
+
 ```{r}
 #Ahora hago lo mismo pero solamente con la data AD + FTD
 
@@ -649,6 +685,7 @@ colinearity_tbl %>%
   arrange(desc(colinearity_strength))
 
 ```
+## Modelo logístico basal con todas las variables
 
 ```{r}
 #Modelo logistico con todas las variables para ver cuales dan "significativas"
@@ -674,7 +711,7 @@ cv_auc_logistic <- function(data, outcome, predictors, v = 10) {
   df <- data[, c(outcome, predictors)]
   
   formula <- as.formula(
-    paste(outcome, "~", paste(predictors, collapse = " + "))
+    paste(outcome, "~", paste(sprintf("`%s`", predictors), collapse = " + "))
   )
   
   folds <- vfold_cv(
@@ -683,10 +720,10 @@ cv_auc_logistic <- function(data, outcome, predictors, v = 10) {
     strata = !!sym(outcome)
   )
   
-  aucs <- map_dbl(folds$splits, function(split) {
+  aucs <- purrr::map_dbl(folds$splits, function(split) {
     
-    train <- analysis(split)
-    test  <- assessment(split)
+    train <- rsample::analysis(split)
+    test  <- rsample::assessment(split)
     
     fit <- glm(
       formula,
@@ -696,14 +733,14 @@ cv_auc_logistic <- function(data, outcome, predictors, v = 10) {
     
     prob <- predict(fit, test, type = "response")
     
-    roc(
+    pROC::roc(
       response  = test[[outcome]],
       predictor = prob,
       quiet = TRUE
     )$auc
   })
   
-  tibble(
+  tibble::tibble(
     auc_mean = mean(aucs),
     auc_sd   = sd(aucs),
     auc_min  = min(aucs),
@@ -728,6 +765,97 @@ auc_full <- cv_auc_logistic(
 auc_full
 
 ```
+```{r}
+#Grafico ese AUC "out of fold"
+library(dplyr)
+library(rsample)
+library(purrr)
+library(pROC)
+
+cv_oof_pred <- function(data, outcome, predictors, v = 10, seed = 123) {
+  
+  # 🛡 1) limpiar predictores
+  predictors <- predictors[!is.na(predictors)]
+  predictors <- predictors[predictors != ""]
+  
+  # 🛡 2) backticks para nombres con espacios / tildes
+  predictors_q <- sprintf("`%s`", predictors)
+  
+  set.seed(seed)
+  
+  df <- data[, c(outcome, predictors)]
+  
+  formula <- as.formula(
+    paste(outcome, "~", paste(predictors_q, collapse = " + "))
+  )
+  
+  folds <- rsample::vfold_cv(df, v = v, strata = !!rlang::sym(outcome))
+  
+  purrr::map_dfr(folds$splits, function(split) {
+    
+    train <- rsample::analysis(split)
+    test  <- rsample::assessment(split)
+    
+    fit <- glm(
+      formula,
+      data = train,
+      family = binomial()
+    )
+    
+    prob <- predict(fit, test, type = "response")
+    
+    tibble::tibble(
+      y = test[[outcome]],
+      prob = as.numeric(prob)
+    )
+  })
+}
+
+oof <- cv_oof_pred(
+  data2,
+  "clinical_diagnosis",
+  vars,
+  v = 10,
+  seed = 123
+)
+
+roc_oof <- roc(
+  response  = oof$y,
+  predictor = oof$prob,
+  quiet = TRUE
+)
+
+auc_val <- auc(roc_oof)
+
+roc_df <- tibble(
+  fpr = 1 - roc_oof$specificities,
+  tpr = roc_oof$sensitivities
+)
+
+library(ggplot2)
+
+ggplot(roc_df, aes(x = fpr, y = tpr)) +
+  geom_line(linewidth = 1.3, color = "#1f77b4") +
+  geom_abline(
+    intercept = 0, slope = 1,
+    linetype = "dashed",
+    color = "grey60"
+  ) +
+  coord_equal() +
+  labs(
+    title = "ROC sin descartar variables",
+    subtitle = paste0("AUC = ", round(auc_val, 3)),
+    x = "1 − Especificidad",
+    y = "Sensibilidad"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+```
+## Descarte de variables por "score" de colinealidad
 
 ```{r}
 #Tenia este "orden" de "Fortaleza de colinealidad". Voy a ir sacando de a una y a analizar el AUC
@@ -739,7 +867,7 @@ colinearity_tbl %>%
 #Voy sacando de a una y calculando, sumo todo a una tabla
 
 
-vars_reduced <- c("cog_tmt_a", "cog_digits_backward_total", "mmse_total","cog_category_animals", "cog_digits_forward_total", "cog_category_vegetables", "cog_tmt_b_corr", "cog_tmt_a_corr", "cog_ed")
+vars_reduced <- c("Atención", "Memoria de trabajo", "MMSE", "Fluidez (animales)", "Memoria inmediata", "Fluidez (vegetales)","Errores ejecutivos", "Correctas ejecutivas", "Correctas atención", "Errores de atención", "Nivel educativo")
 
 set.seed(123)
 
@@ -753,7 +881,8 @@ auc_reduced <- cv_auc_logistic(
 auc_reduced
 ```
 ```{r}
-vars_reduced2 <- c("cog_digits_backward_total", "mmse_total","cog_category_animals", "cog_digits_forward_total", "cog_category_vegetables", "cog_tmt_b_corr", "cog_tmt_a_corr", "cog_ed")
+vars_reduced2<- c( "Memoria de trabajo", "MMSE", "Fluidez (animales)", "Memoria inmediata", "Fluidez (vegetales)","Errores ejecutivos", "Correctas ejecutivas", "Correctas atención", "Errores de atención", "Nivel educativo")
+
 
 set.seed(123)
 
@@ -767,7 +896,7 @@ auc_reduced2 <- cv_auc_logistic(
 auc_reduced2
 ```
 ```{r}
-vars_reduced3 <- c( "mmse_total","cog_category_animals", "cog_digits_forward_total", "cog_category_vegetables","cog_tmt_b_corr", "cog_tmt_a_corr",  "cog_ed")
+vars_reduced3 <- c( "MMSE", "Fluidez (animales)", "Memoria inmediata", "Fluidez (vegetales)","Errores ejecutivos", "Correctas ejecutivas", "Correctas atención", "Errores de atención", "Nivel educativo")
 
 set.seed(123)
 
@@ -781,7 +910,7 @@ auc_reduced3 <- cv_auc_logistic(
 auc_reduced3
 ```
 ```{r}
-vars_reduced4 <- c("cog_category_animals", "cog_digits_forward_total", "cog_category_vegetables",  "cog_tmt_b_corr", "cog_tmt_a_corr", "cog_ed")
+vars_reduced4 <- c("Fluidez (animales)", "Memoria inmediata", "Fluidez (vegetales)","Errores ejecutivos", "Correctas ejecutivas", "Correctas atención", "Errores de atención", "Nivel educativo")
 
 set.seed(123)
 
@@ -803,6 +932,8 @@ rownames(tablaauc) <- c("Sacando 1 variable", "Sacando 2 variables", "Sacando 3 
 tablaauc
 ```
 
+## Regularización: Elastic Net, Ridge, Lasso
+
 ```{r}
 #Entonces probamos hacer Elastic Net (Lasso + Ridge, o cada una de ellas) para manejar colinealidad y seleccionar variables
 
@@ -814,41 +945,40 @@ library(dplyr)
 
 cv_auc_elastic <- function(data, outcome, predictors, alpha = 0.5, v = 10, seed = 123) {
   
-  set.seed(seed)
+  predictors <- predictors[!is.na(predictors)]  # 🛡 evita NA
+  predictors_q <- sprintf("`%s`", predictors)   # 🛡 nombres con espacios
   
-  folds <- vfold_cv(data, v = v, strata = !!sym(outcome))
+  set.seed(seed)
+  folds <- rsample::vfold_cv(data, v = v, strata = !!rlang::sym(outcome))
   
   aucs <- purrr::map_dbl(seq_along(folds$splits), function(i) {
-    
-    set.seed(seed + i)   # 🔴 CLAVE
+    set.seed(seed + i)
     
     split <- folds$splits[[i]]
-    train <- analysis(split)
-    test  <- assessment(split)
+    train <- rsample::analysis(split)
+    test  <- rsample::assessment(split)
     
     X_train <- model.matrix(
-      as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))),
+      as.formula(paste(outcome, "~", paste(predictors_q, collapse = " + "))),
       train
     )[,-1]
     
     X_test <- model.matrix(
-      as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))),
+      as.formula(paste(outcome, "~", paste(predictors_q, collapse = " + "))),
       test
     )[,-1]
     
     y_train <- train[[outcome]]
     y_test  <- test[[outcome]]
     
-    cv_fit <- cv.glmnet(
-      X_train,
-      y_train,
+    cv_fit <- glmnet::cv.glmnet(
+      X_train, y_train,
       family = "binomial",
       alpha = alpha,
-      nfolds = 10   # fijar folds internos
+      nfolds = 5
     )
     
     prob <- predict(cv_fit, X_test, s = "lambda.min", type = "response")
-    
     pROC::roc(y_test, as.vector(prob), quiet = TRUE)$auc
   })
   
@@ -859,12 +989,11 @@ cv_auc_elastic <- function(data, outcome, predictors, alpha = 0.5, v = 10, seed 
   )
 }
 
+
 ```
 
 ```{r}
-data2_clean <- data2[, c("clinical_diagnosis", vars)] %>%
-+     na.omit()
-
+data2_clean <- data2 %>% drop_na()
 
 #Ridge es el mejor, porque regulariza y maneja la colinealidad pero no elimina variables
 
@@ -912,35 +1041,35 @@ cv_auc_elastic_with_coefs <- function(
   data, outcome, predictors,
   alpha = 1, v = 10, seed = 123
 ) {
+  # 🛡 1) limpiar NAs y vacíos
+  predictors <- predictors[!is.na(predictors)]
+  predictors <- predictors[predictors != ""]
+  
+  # 🛡 2) backticks para nombres con espacios/tildes
+  predictors_q <- sprintf("`%s`", predictors)
   
   set.seed(seed)
-  folds <- vfold_cv(data, v = v, strata = !!sym(outcome))
+  folds <- rsample::vfold_cv(data, v = v, strata = !!rlang::sym(outcome))
   
-  aucs <- numeric(v)
-  selected_vars <- vector("list", v)
+  aucs <- numeric(length(folds$splits))
+  selected_vars <- vector("list", length(folds$splits))
   
   for (i in seq_along(folds$splits)) {
-    
     set.seed(seed + i)
     
     split <- folds$splits[[i]]
-    train <- analysis(split)
-    test  <- assessment(split)
+    train <- rsample::analysis(split)
+    test  <- rsample::assessment(split)
     
-    X_train <- model.matrix(
-      as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))),
-      train
-    )[,-1]
+    fml <- as.formula(paste(outcome, "~", paste(predictors_q, collapse = " + ")))
     
-    X_test <- model.matrix(
-      as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))),
-      test
-    )[,-1]
+    X_train <- model.matrix(fml, train)[, -1, drop = FALSE]
+    X_test  <- model.matrix(fml, test)[, -1, drop = FALSE]
     
     y_train <- train[[outcome]]
     y_test  <- test[[outcome]]
     
-    cv_fit <- cv.glmnet(
+    cv_fit <- glmnet::cv.glmnet(
       X_train, y_train,
       family = "binomial",
       alpha = alpha,
@@ -952,8 +1081,11 @@ cv_auc_elastic_with_coefs <- function(
     aucs[i] <- pROC::roc(y_test, as.vector(prob), quiet = TRUE)$auc
     
     # --- VARIABLES SELECCIONADAS ---
-    coefs <- coef(cv_fit, s = "lambda.min")
-    selected_vars[[i]] <- rownames(coefs)[as.numeric(coefs) != 0]
+    coefs <- coef(cv_fit, s = "lambda.min")   # ✅ método S3 correcto
+    sel <- rownames(coefs)[as.numeric(coefs) != 0]
+    sel <- setdiff(sel, "(Intercept)")
+    
+    selected_vars[[i]] <- sel
   }
   
   tibble::tibble(
@@ -962,6 +1094,7 @@ cv_auc_elastic_with_coefs <- function(
     selected_vars = list(unlist(selected_vars))
   )
 }
+
 
 ```
 
@@ -987,6 +1120,7 @@ lasso_importance <- tibble(var = res_lasso$selected_vars[[1]]) %>%
 
 lasso_importance
 ```
+## Importancia de variables por permutación
 
 ```{r}
 #Ahora calculo la importancia por permutación de cada variable: de a una variable, permuto y veo cuánto cambia el AUC
@@ -995,34 +1129,36 @@ perm_importance_cv <- function(
   data, outcome, predictors,
   alpha = 0, v = 10, n_perm = 20, seed = 123
 ) {
+  # 🛡 1) limpiar predictores
+  predictors <- predictors[!is.na(predictors)]
+  predictors <- predictors[predictors != ""]
+  
+  # 🛡 2) backticks para nombres con espacios / tildes
+  predictors_q <- sprintf("`%s`", predictors)
   
   set.seed(seed)
-  folds <- rsample::vfold_cv(data, v = v, strata = !!sym(outcome))
+  folds <- rsample::vfold_cv(data, v = v, strata = !!rlang::sym(outcome))
   
   all_imp <- list()
   
   for (i in seq_along(folds$splits)) {
-    
     set.seed(seed + i)
     
     split <- folds$splits[[i]]
     train <- rsample::analysis(split)
     test  <- rsample::assessment(split)
     
-    X_train <- model.matrix(
-      as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))),
-      train
-    )[,-1]
+    fml <- as.formula(
+      paste(outcome, "~", paste(predictors_q, collapse = " + "))
+    )
     
-    X_test <- model.matrix(
-      as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))),
-      test
-    )[,-1]
+    X_train <- model.matrix(fml, train)[, -1, drop = FALSE]
+    X_test  <- model.matrix(fml, test)[, -1, drop = FALSE]
     
     y_train <- train[[outcome]]
     y_test  <- test[[outcome]]
     
-    # 🔴 USAR cv.glmnet
+    # --- modelo base ---
     cv_fit <- glmnet::cv.glmnet(
       X_train, y_train,
       family = "binomial",
@@ -1043,23 +1179,30 @@ perm_importance_cv <- function(
       quiet = TRUE
     )$auc
     
+    # --- permutaciones ---
     for (var in colnames(X_test)) {
       
       auc_perm <- replicate(n_perm, {
         Xp <- X_test
         Xp[, var] <- sample(Xp[, var])
+        
         prob <- predict(
           cv_fit,
           Xp,
           s = "lambda.min",
           type = "response"
         )
-        pROC::roc(y_test, as.vector(prob), quiet = TRUE)$auc
+        
+        pROC::roc(
+          y_test,
+          as.vector(prob),
+          quiet = TRUE
+        )$auc
       })
       
       all_imp[[length(all_imp) + 1]] <- tibble::tibble(
         var = var,
-        delta_auc = auc_base - mean(auc_perm)
+        delta_auc = as.numeric(auc_base - mean(auc_perm))
       )
     }
   }
@@ -1092,7 +1235,7 @@ perm_imp_ridge <- perm_importance_cv(
 perm_imp_ridge
 
 ```
-
+## Importancia de variables: importancia por permutación vs estabilidad Lasso
 
 ```{r}
 library(dplyr)
@@ -1104,7 +1247,7 @@ perm_tbl <- perm_imp_ridge %>%
     delta_auc = mean_delta_auc
   )
 
-# LASSO stability (la tuya)
+# LASSO estabilidad
 lasso_tbl <- lasso_importance %>%
   rename(
     var = var,
@@ -1154,11 +1297,13 @@ ggplot(
 
 ```
 
+## Modelo logístico con regularización Ridge y reducido a 4 variables
+
 ```{r}
 #Entonces tengo: Variables imprescindibles, arriba a la derecha; variables prescindibles en todos los sentidos, abajo a la izquierda
 #Pruebo sacar las variables prescindibles por AUC y vuelvo a calcular AUC: MEJORA un poco! a 0.696
 
-vars2 <- c("mmse_total", "cog_category_animals", "cog_tmt_b", "cog_ed")
+vars2 <- c("MMSE", "Fluidez (animales)", "Funciones ejecutivas", "Nivel educativo")
 auc_enet_ridge <- cv_auc_elastic(
   data       = data2_clean,
   outcome    = "clinical_diagnosis",
@@ -1170,275 +1315,51 @@ auc_enet_ridge <- cv_auc_elastic(
 auc_enet_ridge
 
 ```
-## Desde acá en adelante creo que no dejaría nada
-
 ```{r}
+#Grafico curva ROC
 
-# Número de permutaciones numéricas
-n_perm <- 1000
-set.seed(123)
-
-# Todas las combinaciones de pares
-pairs <- combn(vars_to_keep, 2, simplify = FALSE)
-
-# Dataframe para guardar resultados
-cor_results <- data.frame(
-  var_1 = character(),
-  var_2 = character(),
-  cor_original = numeric(),
-  cor_perm_mean = numeric(),
-  cor_perm_sd = numeric(),
-  stringsAsFactors = FALSE
+oof <- cv_oof_pred(
+  data2_clean,
+  "clinical_diagnosis",
+  vars2,
+  v = 10,
+  seed = 123
 )
 
-for (pair in pairs) {
-  
-  v1 <- pair[1]
-  v2 <- pair[2]
-  
-  # Correlación original
-  cor_orig <- cor(
-    dataAD[[v1]],
-    dataAD[[v2]],
-    use = "complete.obs"
+roc_oof <- roc(
+  response  = oof$y,
+  predictor = oof$prob,
+  quiet = TRUE
+)
+
+auc_val <- auc(roc_oof)
+
+roc_df <- tibble(
+  fpr = 1 - roc_oof$specificities,
+  tpr = roc_oof$sensitivities
+)
+
+library(ggplot2)
+
+ggplot(roc_df, aes(x = fpr, y = tpr)) +
+  geom_line(linewidth = 1.3, color = "#1f77b4") +
+  geom_abline(
+    intercept = 0, slope = 1,
+    linetype = "dashed",
+    color = "grey60"
+  ) +
+  coord_equal() +
+  labs(
+    title = "ROC descartando variables",
+    subtitle = paste0("AUC = ", round(auc_val, 3)),
+    x = "1 − Especificidad",
+    y = "Sensibilidad"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
   )
-  
-  # Correlaciones permutadas
-  cor_perm <- numeric(n_perm)
-  
-  for (i in seq_len(n_perm)) {
-    df_perm <- dataAD
-    df_perm[[v1]] <- sample(df_perm[[v1]])
-    
-    cor_perm[i] <- cor(
-      df_perm[[v1]],
-      df_perm[[v2]],
-      use = "complete.obs"
-    )
-  }
-  
-  # Guardar resultados
-  cor_results <- rbind(
-    cor_results,
-    data.frame(
-      var_1 = label_map[v1],
-      var_2 = label_map[v2],
-      cor_original = cor_orig,
-      cor_perm_mean = mean(cor_perm),
-      cor_perm_sd = sd(cor_perm)
-    )
-  )
-}
-
-cor_results
-
-
-```
-
-```{r}
-
-set.seed(123)
-
-# columnas a analizar
-v1 <- "cog_tmt_a"
-v2 <- "cog_tmt_b"
-
-# correlación original
-cor_original <- cor(
-  dataAD[[v1]],
-  dataAD[[v2]],
-  use = "complete.obs"
-)
-
-# número de permutaciones a mostrar
-n_perm_show <- 5
-
-# correlaciones permutadas
-cor_perm <- numeric(n_perm_show)
-
-for (i in seq_len(n_perm_show)) {
-  df_perm <- dataAD
-  df_perm[[v1]] <- sample(df_perm[[v1]])
-  
-  cor_perm[i] <- cor(
-    df_perm[[v1]],
-    df_perm[[v2]],
-    use = "complete.obs"
-  )
-}
-
-# armar dataframe para graficar
-cor_df <- data.frame(
-  tipo = c("Original", paste0("Perm ", 1:n_perm_show)),
-  correlacion = c(cor_original, cor_perm)
-)
-
-cor_df
-
-barplot(
-  cor_df$correlacion,
-  names.arg = cor_df$tipo,
-  ylim = c(-1, 1),
-  ylab = "Correlación de Pearson",
-  main = paste(
-    label_map[v1], "vs", label_map[v2]
-  )
-)
-
-abline(h = 0, lty = 2)
-```
-
-## MODELOS LOGISTICOS
-
-### Con todas las variables
-
-```{r}
-modelo_todas <- glm(clinical_diagnosis~., data2, family=binomial)
-summary(modelo_todas)
-
-#EL VIF ES TAN ALTO QUE NO PUEDE CALCULARLO; solo dan signif cog_ed, animals, MMSE, tmt_a_err y tmt_b_err
-```
-```{r}
-#Veo qué variables tienen coeficientes de correlación MUY altos
-
-high_cor_pairs <- which(abs(mat_cor) > 0.70 & abs(mat_cor) < 1, arr.ind = TRUE)
-
-for(i in seq_len(nrow(high_cor_pairs))) {
-  r <- high_cor_pairs[i, ]
-  cat(
-    rownames(mat_cor)[r[1]],
-    "<-->",
-    colnames(mat_cor)[r[2]],
-    ": r =",
-    round(mat_cor[r[1], r[2]], 3),
-    "\n"
-  )
-}
-
-negative_cor_pairs <- which(abs(mat_cor) < -0.70 & abs(mat_cor) > -1, arr.ind = TRUE)
-for(i in seq_len(nrow(negative_cor_pairs))) {
-  r <- negative_cor_pairs[i, ]
-  cat(
-    rownames(mat_cor)[r[1]],
-    "<-->",
-    colnames(mat_cor)[r[2]],
-    ": r =",
-    round(mat_cor[r[1], r[2]], 3),
-    "\n"
-  )
-}
-
-```
-
-### Sacamos algunas muy correlacionadas
-
-```{r}
-modelo2 <- glm(clinical_diagnosis~cog_ed+mmse_total+cog_digits_forward_total + cog_digits_backward_total+cog_digits_forward_span+cog_digits_backward_span+ cog_category_animals+ cog_tmt_a + cog_tmt_a_err +cog_tmt_a_corr+ cog_tmt_b+cog_tmt_b_err +cog_tmt_b_corr+ tests_no_hechos, data2, family=binomial)
-summary(modelo2)
-vif(modelo2)
-```
-
-**VIFS altisimos de las variables con digitos. Pero primero calculemos un AUC de estos modelos**
-
-```{r}
-library(pROC)
-
-roc_todas <- roc(
-  response  = modelo_todas$y,          # la y que realmente usó glm()
-  predictor = fitted(modelo_todas)     # las probabilidades predichas
-)
-
-auc(roc_todas)
-
-plot(
-  roc_todas,
-  col = "#1B9E77",
-  lwd = 3,
-  main = "Curva ROC - Modelo AD vs FTD (todas las variables)",
-  legacy.axes = TRUE
-)
-
-auc_value <- auc(roc_todas)
-text(0.6, 0.2, labels = paste("AUC =", round(auc_value, 3)), cex = 1.2)
-
-
-
-
-```
-
-## Permutaciones
-
-### En cada variable para analizar importancia para el modelo (en delta AUC)
-
-```{r}
-perm_importance <- function(data, model_formula) {
-  # modelo base
-  modelo_base <- glm(model_formula, data = data2, family = binomial)
-  
-  # AUC base usando exactamente las filas que usó glm
-  auc_base <- roc(modelo_base$y, fitted(modelo_base))$auc
-  
-  # variables predictoras (sacamos la respuesta)
-  vars <- all.vars(model_formula)[-1]
-  results <- data.frame(variable = vars, delta_auc = NA_real_)
-  
-  for (v in vars) {
-    data_perm <- data2
-    data_perm[[v]] <- sample(data_perm[[v]])   # permutar variable v
-    
-    modelo_p <- glm(model_formula, data = data_perm, family = binomial)
-    
-    # AUC con variable permutada
-    auc_p <- roc(modelo_p$y, fitted(modelo_p))$auc
-    
-    results$delta_auc[results$variable == v] <- auc_base - auc_p
-  }
-  
-  list(
-    auc_base = auc_base,
-    importance = results
-  )
-}
-
-```
-
-```{r}
-library(dplyr)
-library(pROC)
-
-## 1) Asegurar binario AD vs FTD
-data2 <- data2 %>%
-  filter(clinical_diagnosis %in% c("AD", "FTD")) %>%
-  mutate(dx_bin = ifelse(clinical_diagnosis == "AD", 1, 0))
-
-## 2) Elegir variables
-vars <- c(
-  "cog_digits_backward_total",
-  "cog_digits_forward_total",
-  "cog_digits_backward_span",
-  "cog_digits_forward_span",
-  "cog_category_animals",
-  "cog_category_vegetables",
-  "cog_tmt_a",
-  "cog_tmt_a_err",
-  "cog_tmt_b",
-  "cog_tmt_b_err",
-  "cog_ed",
-  "mmse_total"
-)
-
-## 3) Armar fórmula con esas vars
-formula_base <- as.formula(
-  paste("dx_bin ~", paste(vars, collapse = " + "))
-)
-
-## 4) Correr permutaciones
-set.seed(1)
-perm_res <- perm_importance(data2, formula_base)
-
-
-perm_res$importance %>%
-  arrange(desc(delta_auc))
 
 ```
 
